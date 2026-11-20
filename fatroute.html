@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="nl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FatRoute – fatbike routeplanner</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{--bg:#0f1417;--card:#192126;--line:#2a363d;--tx:#e8eef1;--mu:#8fa3ad;--ac:#ff7a1a;--ok:#3ddc97}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{font:15px system-ui,sans-serif;background:var(--bg);color:var(--tx);display:grid;grid-template-columns:380px 1fr}
+#panel{overflow:auto;padding:16px;border-right:1px solid var(--line)}
+#map{height:100%}
+h1{font-size:20px;margin:0 0 2px}h1 span{color:var(--ac)}
+.sub{color:var(--mu);font-size:13px;margin-bottom:14px}
+label{display:block;font-size:12px;color:var(--mu);margin:10px 0 4px}
+input,select,button{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;width:100%}
+input[type=range]{padding:0;accent-color:var(--ac)}
+.row{display:flex;gap:8px}.row>*{flex:1}
+button{cursor:pointer;width:auto}button.pri{background:var(--ac);border-color:var(--ac);color:#111;font-weight:700}
+button:hover{filter:brightness(1.15)}
+.spd{display:flex;justify-content:space-between;align-items:baseline}.spd b{font-size:22px;color:var(--ac)}
+.route{background:var(--card);border:2px solid var(--line);border-radius:12px;padding:12px;margin-top:10px;cursor:pointer}
+.route.sel{border-color:var(--ac)}
+.big{font-size:24px;font-weight:800}.mu{color:var(--mu);font-size:13px}
+.steps{margin:10px 0 0;padding:0;list-style:none;font-size:14px}
+.steps li{padding:7px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+.steps small{color:var(--mu);white-space:nowrap}
+#msg{color:var(--mu);font-size:13px;margin-top:10px;min-height:18px}
+.pin{width:26px;height:26px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid #fff;display:flex}
+@media(max-width:800px){body{grid-template-columns:1fr;grid-template-rows:55vh 1fr}#map{order:-1}#panel{border:0}}
+</style></head><body>
+<div id="panel">
+<h1>Fat<span>Route</span> 🚲</h1>
+<div class="sub">Routeplanner op fietspaden, maar met jóuw fatbike-tempo.</div>
+<label>Start</label>
+<div class="row"><input id="a" placeholder="Bijv. Leeuwarden"><button id="loc" title="Mijn locatie">📍</button></div>
+<label>Bestemming</label>
+<input id="b" placeholder="Bijv. Terschelling Oost / Harlingen">
+<div class="row" style="margin-top:8px"><button id="swap">⇅ Wissel</button><button id="clr">Wis</button></div>
+<label>Ondergrond / type fatbike</label>
+<select id="prof">
+<option value="22">Verhard – gewone fatbike (22 km/u)</option>
+<option value="15">Mix gravel/zand (15 km/u)</option>
+<option value="11">Strand / los zand (11 km/u)</option>
+<option value="8">Sneeuw / modder (8 km/u)</option>
+<option value="26">E-fatbike (26 km/u)</option>
+<option value="custom">Eigen tempo…</option>
+</select>
+<div class="spd" style="margin-top:12px"><span class="mu">Gemiddeld tempo</span><span><b id="sv">22</b> km/u</span></div>
+<input type="range" id="sp" min="5" max="35" step="0.5" value="22">
+<div class="row"><div><label>Vertrek</label><input type="time" id="dep"></div>
+<div><label>Pauze / uur (min)</label><input type="number" id="brk" min="0" max="30" value="0"></div></div>
+<button class="pri" id="go" style="width:100%;margin-top:12px">Plan route</button>
+<div id="msg">Tip: klik op de kaart om start en bestemming te zetten.</div>
+<div id="out"></div>
+</div>
+<div id="map"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const map=L.map('map').setView([53.2,5.8],9);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+let P={a:null,b:null},M={a:null,b:null},layers=[],routes=[],sel=0;
+const now=new Date();$('dep').value=now.toTimeString().slice(0,5);
+const icon=c=>L.divIcon({className:'',html:`<div class="pin" style="background:${c}"></div>`,iconSize:[26,26],iconAnchor:[13,26]});
+function setPt(k,ll,name){P[k]=ll;if(M[k])M[k].setLatLng(ll);else{M[k]=L.marker(ll,{icon:icon(k=='a'?'#3ddc97':'#ff7a1a'),draggable:true}).addTo(map);
+M[k].on('dragend',e=>{P[k]=e.target.getLatLng();$(k).value=P[k].lat.toFixed(4)+', '+P[k].lng.toFixed(4);$(k).dataset.geo=$(k).value;if(P.a&&P.b)plan()})}
+if(name){$(k).value=name;$(k).dataset.geo=name}}
+async function geo(k){const q=$(k).value.trim();if(!q)return;
+try{const r=await(await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q))).json();
+if(!r[0]){$('msg').textContent='Niet gevonden: '+q;return false}
+setPt(k,L.latLng(+r[0].lat,+r[0].lon));return true}catch(e){$('msg').textContent='Zoeken mislukt (internet?)';return false}}
+map.on('click',e=>{const k=!P.a?'a':!P.b?'b':'b';setPt(k,e.latlng,e.latlng.lat.toFixed(4)+', '+e.latlng.lng.toFixed(4));if(P.a&&P.b)plan()});
+$('loc').onclick=()=>navigator.geolocation.getCurrentPosition(p=>{const l=L.latLng(p.coords.latitude,p.coords.longitude);setPt('a',l,'Mijn locatie');map.setView(l,13)},()=>$('msg').textContent='Locatie niet toegestaan');
+$('swap').onclick=()=>{[P.a,P.b]=[P.b,P.a];[$('a').value,$('b').value]=[$('b').value,$('a').value];for(const k of['a','b'])if(P[k])setPt(k,P[k]);if(P.a&&P.b)plan()};
+$('clr').onclick=()=>{for(const k of['a','b']){if(M[k])map.removeLayer(M[k]);M[k]=P[k]=null;$(k).value=''}clear();$('out').innerHTML=''};
+function clear(){layers.forEach(l=>map.removeLayer(l));layers=[]}
+$('prof').onchange=e=>{if(e.target.value!='custom'){$('sp').value=e.target.value;upd()}};
+$('sp').oninput=()=>{$('prof').value='custom';upd()};$('brk').oninput=upd;$('dep').oninput=upd;
+$('go').onclick=plan;
+for(const k of['a','b'])$(k).addEventListener('keydown',e=>{if(e.key=='Enter')plan()});
+function upd(){$('sv').textContent=$('sp').value;if(routes.length)render()}
+const fmt=m=>{m=Math.round(m);const h=Math.floor(m/60);return h?h+' u '+String(m%60).padStart(2,'0')+' min':m+' min'};
+const km=m=>(m/1000).toFixed(m<10000?1:0)+' km';
+function eta(r){const sp=+$('sp').value,b=+$('brk').value;let min=r.distance/1000/sp*60;min+=min/60*b;return min}
+async function plan(){
+for(const k of['a','b']){const v=$(k).value.trim();if(v&&v!==$(k).dataset.geo){if(!await geo(k))return;$(k).dataset.geo=v}}
+if(!P.a||!P.b){$('msg').textContent='Vul start en bestemming in.';return}
+$('msg').textContent='Route zoeken…';
+try{const u=`https://routing.openstreetmap.de/routed-bike/route/v1/driving/${P.a.lng},${P.a.lat};${P.b.lng},${P.b.lat}?overview=full&geometries=geojson&alternatives=true&steps=true`;
+const d=await(await fetch(u)).json();if(!d.routes||!d.routes.length){$('msg').textContent='Geen route gevonden.';return}
+routes=d.routes;sel=0;$('msg').textContent='';render(true)}catch(e){$('msg').textContent='Routeren mislukt (internet?)'}}
+const T={turn:'Ga',continue:'Ga verder','new name':'Ga verder',depart:'Vertrek',arrive:'Aankomst',merge:'Voeg samen','on ramp':'Neem oprit','off ramp':'Neem afrit',fork:'Houd',roundabout:'Rotonde','end of road':'Einde weg'};
+const Mo={left:'links','slight left':'schuin links','sharp left':'scherp links',right:'rechts','slight right':'schuin rechts','sharp right':'scherp rechts',straight:'rechtdoor',uturn:'keer om'};
+function step(s){const t=s.maneuver.type,m=Mo[s.maneuver.modifier]||'';let x=T[t]||'Ga';
+if(t=='roundabout'||t=='rotary')x='Rotonde, afslag '+(s.maneuver.exit||'');else if(t=='arrive')x='Aankomst';else if(t=='depart')x='Vertrek'+(m?' ('+m+')':'');else x+=' '+m;
+return x.trim()+(s.name?' · '+s.name:'')}
+function render(fit){clear();
+routes.forEach((r,i)=>{const l=L.geoJSON(r.geometry,{style:{color:i==sel?'#ff7a1a':'#6b7c85',weight:i==sel?7:5,opacity:i==sel?1:.7}}).addTo(map);l.on('click',()=>{sel=i;render()});layers.push(l);if(i==sel)l.bringToFront()});
+if(fit)map.fitBounds(layers[0].getBounds(),{padding:[40,40]});
+const dep=$('dep').value.split(':');let out='';
+routes.forEach((r,i)=>{const m=eta(r),t=new Date();t.setHours(+dep[0]||0,+dep[1]||0,0,0);const arr=new Date(t.getTime()+m*60000);
+out+=`<div class="route ${i==sel?'sel':''}" data-i="${i}"><div class="big">${fmt(m)}</div><div class="mu">${km(r.distance)} · aankomst ${arr.toTimeString().slice(0,5)} · normale fiets ±${fmt(r.duration/60)}</div></div>`});
+const r=routes[sel];
+out+=`<div class="row" style="margin-top:10px"><button id="gpx">⬇ GPX</button><button id="shr">🔗 Google Maps</button></div><ul class="steps">`;
+r.legs.forEach(l=>l.steps.forEach(s=>{out+=`<li><span></span><small>${km(s.distance)}</small></li>`}));
+out+='</ul>';$('out').innerHTML=out;
+const li=$('out').querySelectorAll('.steps li');let n=0;r.legs.forEach(l=>l.steps.forEach(s=>{li[n++].firstChild.textContent=step(s)}));
+$('out').querySelectorAll('.route').forEach(e=>e.onclick=()=>{sel=+e.dataset.i;render()});
+$('gpx').onclick=()=>{const pts=r.geometry.coordinates.map(c=>`<trkpt lat="${c[1]}" lon="${c[0]}"/>`).join('');
+const x=`<?xml version="1.0"?><gpx version="1.1" creator="FatRoute" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>FatRoute</name><trkseg>${pts}</trkseg></trk></gpx>`;
+const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([x],{type:'application/gpx+xml'}));a.download='fatroute.gpx';a.click()};
+$('shr').onclick=()=>window.open(`https://www.google.com/maps/dir/?api=1&origin=${P.a.lat},${P.a.lng}&destination=${P.b.lat},${P.b.lng}&travelmode=bicycling`)}
+</script></body></html>
